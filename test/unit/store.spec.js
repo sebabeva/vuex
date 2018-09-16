@@ -1,7 +1,8 @@
 import Vue from 'vue/dist/vue.common.js'
-import Vuex from '../../dist/vuex.js'
+import Vuex from '../../dist/vuex.common.js'
 
 const TEST = 'TEST'
+const isSSR = process.env.VUE_ENV === 'server'
 
 describe('Store', () => {
   it('committing mutations', () => {
@@ -52,7 +53,7 @@ describe('Store', () => {
     })
     expect(() => {
       store.commit(undefined, 2)
-    }).toThrowError(/Expects string as the type, but found undefined/)
+    }).toThrowError(/expects string as the type, but found undefined/)
     expect(store.state.a).toBe(1)
   })
 
@@ -205,7 +206,7 @@ describe('Store', () => {
     })
     expect(() => {
       store.dispatch(undefined, 2)
-    }).toThrowError(/Expects string as the type, but found undefined/)
+    }).toThrowError(/expects string as the type, but found undefined/)
     expect(store.state.a).toBe(1)
   })
 
@@ -247,7 +248,7 @@ describe('Store', () => {
     expect(child.$store).toBe(store)
   })
 
-  it('should warn silent option depreciation', function () {
+  it('should warn silent option depreciation', () => {
     spyOn(console, 'warn')
 
     const store = new Vuex.Store({
@@ -263,74 +264,133 @@ describe('Store', () => {
     )
   })
 
-  it('strict mode: warn mutations outside of handlers', function () {
+  it('asserts the call with the new operator', () => {
+    expect(() => {
+      Vuex.Store({})
+    }).toThrowError(/store must be called with the new operator/)
+  })
+
+  it('should accept state as function', () => {
     const store = new Vuex.Store({
-      state: {
+      state: () => ({
         a: 1
-      },
-      strict: true
+      }),
+      mutations: {
+        [TEST] (state, n) {
+          state.a += n
+        }
+      }
     })
-    Vue.config.silent = true
-    expect(() => { store.state.a++ }).toThrow()
-    Vue.config.silent = false
+    expect(store.state.a).toBe(1)
+    store.commit(TEST, 2)
+    expect(store.state.a).toBe(3)
   })
 
-  it('watch: with resetting vm', done => {
+  it('should not call root state function twice', () => {
+    const spy = jasmine.createSpy().and.returnValue(1)
+    new Vuex.Store({
+      state: spy
+    })
+    expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  it('subscribe: should handle subscriptions / unsubscriptions', () => {
+    const subscribeSpy = jasmine.createSpy()
+    const secondSubscribeSpy = jasmine.createSpy()
+    const testPayload = 2
     const store = new Vuex.Store({
-      state: {
-        count: 0
-      },
+      state: {},
       mutations: {
-        [TEST]: state => state.count++
+        [TEST]: () => {}
       }
     })
 
-    const spy = jasmine.createSpy()
-    store.watch(state => state.count, spy)
+    const unsubscribe = store.subscribe(subscribeSpy)
+    store.subscribe(secondSubscribeSpy)
+    store.commit(TEST, testPayload)
+    unsubscribe()
+    store.commit(TEST, testPayload)
 
-    // reset store vm
-    store.registerModule('test', {})
-
-    Vue.nextTick(() => {
-      store.commit(TEST)
-      expect(store.state.count).toBe(1)
-
-      Vue.nextTick(() => {
-        expect(spy).toHaveBeenCalled()
-        done()
-      })
-    })
+    expect(subscribeSpy).toHaveBeenCalledWith(
+      { type: TEST, payload: testPayload },
+      store.state
+    )
+    expect(secondSubscribeSpy).toHaveBeenCalled()
+    expect(subscribeSpy.calls.count()).toBe(1)
+    expect(secondSubscribeSpy.calls.count()).toBe(2)
   })
 
-  it('watch: getter function has access to store\'s getters object', done => {
-    const store = new Vuex.Store({
-      state: {
-        count: 0
-      },
-      mutations: {
-        [TEST]: state => state.count++
-      },
-      getters: {
-        getCount: state => state.count
+  // store.watch should only be asserted in non-SSR environment
+  if (!isSSR) {
+    it('strict mode: warn mutations outside of handlers', () => {
+      const store = new Vuex.Store({
+        state: {
+          a: 1
+        },
+        strict: true
+      })
+      Vue.config.silent = true
+      expect(() => { store.state.a++ }).toThrow()
+      Vue.config.silent = false
+    })
+
+    it('watch: with resetting vm', done => {
+      const store = new Vuex.Store({
+        state: {
+          count: 0
+        },
+        mutations: {
+          [TEST]: state => state.count++
+        }
+      })
+
+      const spy = jasmine.createSpy()
+      store.watch(state => state.count, spy)
+
+      // reset store vm
+      store.registerModule('test', {})
+
+      Vue.nextTick(() => {
+        store.commit(TEST)
+        expect(store.state.count).toBe(1)
+
+        Vue.nextTick(() => {
+          expect(spy).toHaveBeenCalled()
+          done()
+        })
+      })
+    })
+
+    it('watch: getter function has access to store\'s getters object', done => {
+      const store = new Vuex.Store({
+        state: {
+          count: 0
+        },
+        mutations: {
+          [TEST]: state => state.count++
+        },
+        getters: {
+          getCount: state => state.count
+        }
+      })
+
+      const getter = function getter (state, getters) {
+        return state.count
       }
-    })
+      const spy = spyOn({ getter }, 'getter').and.callThrough()
+      const spyCb = jasmine.createSpy()
 
-    const getter = function getter (state, getters) {
-      return state.count
-    }
-    const spy = spyOn({ getter }, 'getter').and.callThrough()
-    const spyCb = jasmine.createSpy()
-
-    store.watch(spy, spyCb)
-
-    Vue.nextTick(() => {
-      store.commit(TEST)
-      expect(store.state.count).toBe(1)
+      store.watch(spy, spyCb)
 
       Vue.nextTick(() => {
-        expect(spy).toHaveBeenCalledWith(store.state, store.getters)
-        done()
+        store.commit(TEST)
+        expect(store.state.count).toBe(1)
+
+        Vue.nextTick(() => {
+          expect(spy).toHaveBeenCalledWith(store.state, store.getters)
+          done()
+        })
       })
     })
-  })
+  }
 })

@@ -1,14 +1,17 @@
 import { forEachValue } from '../util'
 
+// Base data struct for store's module, package with some attribute and method
 export default class Module {
   constructor (rawModule, runtime) {
     this.runtime = runtime
+    // Store some children item
     this._children = Object.create(null)
+    // Store the origin module object which passed by programmer
     this._rawModule = rawModule
-  }
+    const rawState = rawModule.state
 
-  get state () {
-    return this._rawModule.state || {}
+    // Store the origin module's state
+    this.state = (typeof rawState === 'function' ? rawState() : rawState) || {}
   }
 
   get namespaced () {

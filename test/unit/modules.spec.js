@@ -1,5 +1,5 @@
 import Vue from 'vue'
-import Vuex from '../../dist/vuex.js'
+import Vuex from '../../dist/vuex.common.js'
 
 const TEST = 'TEST'
 
@@ -80,6 +80,28 @@ describe('Modules', () => {
       store.commit('a/foo')
       expect(mutationSpy).toHaveBeenCalled()
     })
+
+    it('dynamic module registration preserving hydration', () => {
+      const store = new Vuex.Store({})
+      store.replaceState({ a: { foo: 'state' }})
+      const actionSpy = jasmine.createSpy()
+      const mutationSpy = jasmine.createSpy()
+      store.registerModule('a', {
+        namespaced: true,
+        getters: { foo: state => state.foo },
+        actions: { foo: actionSpy },
+        mutations: { foo: mutationSpy }
+      }, { preserveState: true })
+
+      expect(store.state.a.foo).toBe('state')
+      expect(store.getters['a/foo']).toBe('state')
+
+      store.dispatch('a/foo')
+      expect(actionSpy).toHaveBeenCalled()
+
+      store.commit('a/foo')
+      expect(mutationSpy).toHaveBeenCalled()
+    })
   })
 
   // #524
@@ -105,6 +127,69 @@ describe('Modules', () => {
   })
 
   describe('modules usage', () => {
+    it('state as function (multiple module in same store)', () => {
+      const module = {
+        state () {
+          return { a: 0 }
+        },
+        mutations: {
+          [TEST] (state, n) {
+            state.a += n
+          }
+        }
+      }
+
+      const store = new Vuex.Store({
+        modules: {
+          one: module,
+          two: module
+        }
+      })
+
+      expect(store.state.one.a).toBe(0)
+      expect(store.state.two.a).toBe(0)
+
+      store.commit(TEST, 1)
+      expect(store.state.one.a).toBe(1)
+      expect(store.state.two.a).toBe(1)
+    })
+
+    it('state as function (same module in multiple stores)', () => {
+      const module = {
+        state () {
+          return { a: 0 }
+        },
+        mutations: {
+          [TEST] (state, n) {
+            state.a += n
+          }
+        }
+      }
+
+      const storeA = new Vuex.Store({
+        modules: {
+          foo: module
+        }
+      })
+
+      const storeB = new Vuex.Store({
+        modules: {
+          bar: module
+        }
+      })
+
+      expect(storeA.state.foo.a).toBe(0)
+      expect(storeB.state.bar.a).toBe(0)
+
+      storeA.commit(TEST, 1)
+      expect(storeA.state.foo.a).toBe(1)
+      expect(storeB.state.bar.a).toBe(0)
+
+      storeB.commit(TEST, 2)
+      expect(storeA.state.foo.a).toBe(1)
+      expect(storeB.state.bar.a).toBe(2)
+    })
+
     it('module: mutation', function () {
       const mutations = {
         [TEST] (state, n) {
@@ -488,9 +573,66 @@ describe('Modules', () => {
       })
     })
 
+    it('root actions dispatched in namespaced modules', done => {
+      const store = new Vuex.Store({
+        modules: {
+          a: {
+            namespaced: true,
+            actions: {
+              [TEST]: {
+                root: true,
+                handler () {
+                  return 1
+                }
+              }
+            }
+          },
+          b: {
+            namespaced: true,
+            actions: {
+              [TEST]: {
+                root: true,
+                handler () {
+                  return new Promise(r => r(2))
+                }
+              }
+            }
+          },
+          c: {
+            namespaced: true,
+            actions: {
+              [TEST]: {
+                handler () {
+                  // Should not be called
+                  return 3
+                }
+              }
+            }
+          },
+          d: {
+            namespaced: true,
+            actions: {
+              [TEST] () {
+                // Should not be called
+                return 4
+              }
+            }
+          }
+        }
+      })
+      store.dispatch(TEST).then(res => {
+        expect(res.length).toBe(2)
+        expect(res[0]).toBe(1)
+        expect(res[1]).toBe(2)
+        done()
+      })
+    })
+
     it('plugins', function () {
       let initState
+      const actionSpy = jasmine.createSpy()
       const mutations = []
+      const subscribeActionSpy = jasmine.createSpy()
       const store = new Vuex.Store({
         state: {
           a: 1
@@ -500,21 +642,121 @@ describe('Modules', () => {
             state.a += n
           }
         },
+        actions: {
+          [TEST]: actionSpy
+        },
         plugins: [
           store => {
             initState = store.state
             store.subscribe((mut, state) => {
-              expect(state).toBe(store.state)
+              expect(state).toBe(state)
               mutations.push(mut)
             })
+            store.subscribeAction(subscribeActionSpy)
           }
         ]
       })
       expect(initState).toBe(store.state)
       store.commit(TEST, 2)
+      store.dispatch(TEST, 2)
       expect(mutations.length).toBe(1)
       expect(mutations[0].type).toBe(TEST)
       expect(mutations[0].payload).toBe(2)
+      expect(actionSpy).toHaveBeenCalled()
+      expect(subscribeActionSpy).toHaveBeenCalledWith(
+        { type: TEST, payload: 2 },
+        store.state
+      )
     })
+  })
+
+  it('asserts a mutation should be a function', () => {
+    expect(() => {
+      new Vuex.Store({
+        mutations: {
+          test: null
+        }
+      })
+    }).toThrowError(
+      /mutations should be function but "mutations\.test" is null/
+    )
+
+    expect(() => {
+      new Vuex.Store({
+        modules: {
+          foo: {
+            modules: {
+              bar: {
+                mutations: {
+                  test: 123
+                }
+              }
+            }
+          }
+        }
+      })
+    }).toThrowError(
+      /mutations should be function but "mutations\.test" in module "foo\.bar" is 123/
+    )
+  })
+
+  it('asserts an action should be a function', () => {
+    expect(() => {
+      new Vuex.Store({
+        actions: {
+          test: 'test'
+        }
+      })
+    }).toThrowError(
+      /actions should be function or object with "handler" function but "actions\.test" is "test"/
+    )
+
+    expect(() => {
+      new Vuex.Store({
+        modules: {
+          foo: {
+            modules: {
+              bar: {
+                actions: {
+                  test: 'error'
+                }
+              }
+            }
+          }
+        }
+      })
+    }).toThrowError(
+      /actions should be function or object with "handler" function but "actions\.test" in module "foo\.bar" is "error"/
+    )
+  })
+
+  it('asserts a getter should be a function', () => {
+    expect(() => {
+      new Vuex.Store({
+        getters: {
+          test: undefined
+        }
+      })
+    }).toThrowError(
+      /getters should be function but "getters\.test" is undefined/
+    )
+
+    expect(() => {
+      new Vuex.Store({
+        modules: {
+          foo: {
+            modules: {
+              bar: {
+                getters: {
+                  test: true
+                }
+              }
+            }
+          }
+        }
+      })
+    }).toThrowError(
+      /getters should be function but "getters\.test" in module "foo\.bar" is true/
+    )
   })
 })
